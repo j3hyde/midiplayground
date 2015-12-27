@@ -1,4 +1,4 @@
-import pypm, time, random, copy
+import pypm, time, random, copy, argparse, sys
 
 # Concept of views
 # There is one root view which may delegate to sub-views.
@@ -7,34 +7,176 @@ import pypm, time, random, copy
 
 class LifeView(object):
   '''Views basically listen to model changes and issue MIDI events to represent them.  Input is also taken from MIDI, interpreted a bit, and emitted as events by the View.'''
+  def __init__(self):
+    self.listeners = []
+
   def setitem(self, o, i, v):
     '''Listen for LifeModel changes.'''
     pass
+
+  def handle_input(self):
+    pass
+
+  def add_listener(self, listener):
+    self.listeners.append(listener)
 
 class PrintingLifeView(LifeView):
   def setitem(self, o, i, v):
     print(o, i, v)
 
-class MidiLifeView(LifeView):
-  def __init__(self, out_device):
-    '''Takes a MIDI input device to be used for displaying life.'''
-    self.out_device = out_device
+class UIDriver(object):
+  def close(self):
+    pass
 
-  def setitem(self, o, i, v):
-    index = self.map_item_to_midi(i[0], i[1])
-    data = [[[144, index, v * 127, 0], pypm.Time()]]
+  def get(self):
+    return []
 
-    self.out_device.Write(data)
+  def set(self, col, row, value):
+    pass
 
-  def map_item_to_midi(self, col, row):
+  def clear(self, col=None, row=None):
+    pass
+
+  def commit(self):
+    pass
+
+  def close(self):
+    pass
+
+class UIInputEvent(object):
+  '''Represents a UI event in "app space" meaning that coordinates are converted away from the raw device coordinates (i.e. in grid-space, not MIDI-space).  The value currently represents the value from the input device, however, until I define a suitable grid-space value domain.'''
+  def __init__(self, col, row, value):
+    self.col = col
+    self.row = row
+    self.value = value
+
+class DebugDriver(UIDriver):
+  def __init__(self, inner):
+    self.inner = inner
+
+  def get(self):
+    self.log('get')
+    if self.inner:
+      return self.inner.get()
+    else:
+      return []
+
+  def set(self, col, row, value):
+    self.log('set({0}, {1}, {2})'.format(col, row, value))
+    if self.inner:
+      return self.inner.set(col, row, value)
+
+  def clear(self, col=None, row=None):
+    self.log('clear({0}, {1})'.format(col, row))
+    if self.inner:
+      return self.inner.clear()
+
+  def commit(self):
+    self.log('commit')
+    if self.inner:
+      return self.inner.commit()
+
+  def close(self):
+    self.log('close')
+    if self.inner:
+      return self.inner.close()
+
+  def log(self, message):
+    print(message)
+
+class MidiDriver(UIDriver):
+  '''Drives UI interactions with a MIDI device.  Currently implemented with the Novation Launchpad Mini grid controller.  Ideally more mappings would be supported.'''
+  def __init__(self, in_device_id, out_device_id):
+    print "Opening devices:"
+
+    self.in_device = pypm.Input(in_device_id)
+    print "\tin: {0}, {1}".format(in_device_id, self.in_device)
+
+    self.out_device = pypm.Output(out_device_id)
+    print "\tin: {0}, {1}".format(out_device_id, self.out_device)
+    self.write_queue = []
+
+  @classmethod
+  def list_devices(cls):
+    '''Queries the MIDI API for available devices.'''
+    ret = []
+    for i in range(pypm.CountDevices()):
+      ret.append(pypm.GetDeviceInfo(i))
+    return ret
+
+  def get(self):
+    '''Gets any available UIInputEvents from the attached MIDI device.'''
+    events = []
+    while self.in_device.Poll():
+      for e in self.in_device.Read(1):
+        coords = self.map_midi_to_ui(e[0][1])
+        events.append(UIInputEvent(coords[0], coords[1], e[0][2]))
+    return events
+
+  def set(self, col, row, velocity=127):
+    '''Sets the value of a light in the MIDI device's grid.'''
+    index = self.map_ui_to_midi(col, row)
+    self.write_queue.append([[144, index, velocity, 0], pypm.Time()])
+
+  def clear(self, col=None, row=None):
+    '''Clears the value of a light in the MIDI device's grid.'''
+    if col is None and row is None:
+      t = pypm.Time()
+      self.write_queue += [ [[144, index, 0, 0], t] for index in range(8*16) ]
+    else:
+      index = self.map_ui_to_midi(col, row)
+      self.write_queue.append([[144, index, 0, 0], pypm.Time()])
+
+  def commit(self):
+    '''Writes out the MIDI commands set up in set() and clear().  This must be called for those methods to take any actual effect.'''
+    self.out_device.Write(self.write_queue)
+    del self.write_queue[:]
+
+  def close(self):
+    self.in_device.Close()
+    self.out_device.Close()
+
+  @classmethod
+  def map_ui_to_midi(cls, col, row):
     '''Maps Game of Life coordinates to MIDI note index.
     
-    >>> view = MidiLifeView(None)
-    >>> view.map_item_to_midi(5, 5)
+    >>> MidiDriver.map_ui_to_midi(5, 5)
     85
     '''
     return row * 16 + col
 
+  @classmethod
+  def map_midi_to_ui(cls, note):
+    '''Maps Game of Life coordinates to MIDI note index.
+    
+    >>> MidiDriver.map_midi_to_ui(85)
+    (5, 5)
+    >>> MidiDriver.map_midi_to_ui(84)
+    (4, 5)
+    >>> MidiDriver.map_midi_to_ui(80)
+    (0, 5)
+    >>> MidiDriver.map_midi_to_ui(64)
+    (0, 4)
+    >>> MidiDriver.map_midi_to_ui(65)
+    (1, 4)
+    '''
+    return (note % 16, int(note / 16))
+
+
+class MidiLifeView(LifeView):
+  def __init__(self, ui_driver):
+    '''Takes a MIDI device to be used for displaying life.'''
+    super(MidiLifeView, self).__init__()
+    self.ui_driver = ui_driver
+
+  def setitem(self, o, i, v):
+    self.ui_driver.set(i[0], i[1], v)
+    self.ui_driver.commit()
+
+  def handle_input(self):
+    for event in self.ui_driver.get():
+      for listener in self.listeners:
+        listener(self, event)
 
 class LifeModel(object):
   def __init__(self, width, height, data=None):
@@ -400,38 +542,62 @@ class ItemBindingMixin(object):
 
   def __setitem__(self, i, value):
     super(ItemBindingMixin, self).__setitem__(i, value)
-    for l in self._binding_listeners:
-      l(self, i, value)
+    for listener in self._binding_listeners:
+      listener(self, i, value)
 
 class BoundLifeModel(ItemBindingMixin, LifeModel):
   pass
 
 class Life(object):
-  def __init__(self, out_device, width=8, height=8):
-  #def __init__(self, width=8, height=8):
-    self.out_device = out_device
+  def __init__(self, uidriver, width=8, height=8):
     self.model = BoundLifeModel(width, height)
     #self.model.add_listener(PrintingLifeView().setitem)
-    self.model.add_listener(MidiLifeView(self.out_device).setitem)
+    self.view = MidiLifeView(uidriver)
+    self.view.add_listener(self.input_handler)
+    self.model.add_listener(self.view.setitem)
     self.model.perturb(30)
+    self.paused = False
 
   def run(self, speed=1):
     '''Runs a Life simulation and displays it in a view.'''
     # Link a View to our data model
     # Loop, ticking the simulation each second
+    print 'running'
+    next_tick = time.time()
     while True:
-      self.model.tick()
-      print(self.model)
-      print
-      time.sleep(speed)
+      now = time.time()
+      if now >= next_tick and not self.paused:
+        next_tick = now + speed
+        self.model.tick()
+        print(self.model)
+        print
 
-def find_device():
+      self.view.handle_input()
+      time.sleep(0.1)
+
+  def input_handler(self, source, uievent):
+    if uievent.value == 0:
+      return
+
+    if uievent.row < 8 and uievent.col < 8 and uievent.row >= 0 and uievent.col >= 0:
+      print('input: {0}, {1}, {2}'.format(uievent.col, uievent.row, uievent.value))
+      v = self.model[uievent.col, uievent.row]
+      self.model[uievent.col, uievent.row] = 1 if v == 0 else 0
+    elif uievent.col == 8 and uievent.row == 0:
+      self.paused = not self.paused
+
+
+def find_device(dev_name):
   n = pypm.CountDevices()
+  in_device = None
+  out_device = None
   for i in range(n):
     info = pypm.GetDeviceInfo(i)
-    if info[1] == 'Launchpad Mini' and info[3] == 1:
-      return i
-  return None
+    if info[1] == dev_name and info[2] == True:
+      in_device = i
+    if info[1] == dev_name and info[3] == True:
+      out_device = i
+  return (in_device, out_device)
 
 
 def test():
@@ -442,19 +608,77 @@ def clear(out_device):
   for i in range(9*16):
     out_device.Write([[[144, i, 0, 0], pypm.Time()]])
 
+def get_argparser():
+  parser = argparse.ArgumentParser()
+  parser.add_argument('--test', default=False, action='store_true')
+  parser.add_argument('--list', action='store_true')
+  parser.add_argument('--device')
+  parser.add_argument('--indevice', type=int)
+  parser.add_argument('--outdevice', type=int)
+  parser.add_argument('--verbose', '-v', action='store_true')
+  return parser
+
+def get_config():
+  return get_argparser().parse_args()
+
+def print_help():
+  get_argparser().print_help()
+
+def main(config):
+  pypm.Initialize()
+  if config.device:
+    d = find_device(config.device)
+  else:
+    d = (config.indevice, config.outdevice)
+  if not d is None or not (d[0] is None or d[1] is None):
+#    try:
+#      in_device = pypm.Input(d[0])
+#    except:
+#      print("Error: Could not open input device.")
+#      pypm.Terminate()
+#      return
+#
+#    try:
+#      out_device = pypm.Output(d[1])
+#    except:
+#      print("Error: Could not open output device.")
+#      pypm.Terminate()
+#      return
+    print d
+    uidriver = MidiDriver(d[0], d[1])
+    if config.verbose:
+      uidriver = DebugDriver(uidriver)
+
+    try:
+      time.sleep(2)
+      print 'Life()'
+      life = Life(uidriver)
+      print 'run()'
+      life.run(1)
+      print 'Done.'
+    except Exception as e:
+      print e
+    finally:
+      uidriver.clear()
+      uidriver.close()
+      pypm.Terminate()
+      return
+  else:
+    print 'No input/output device found.  Exiting.'
+
 
 if __name__ == '__main__':
-  test()
-  pypm.Initialize()
-  d = find_device()
-  if d:
-    out_device = pypm.Output(d)
-    try:
-        time.sleep(2)
-        Life(out_device).run(1)
-    finally:
-      clear(out_device)
-      out_device.Close()
-      pypm.Terminate()
+  config = get_config()
+
+  if config.test:
+    test()
+  elif config.list:
+    devs = MidiDriver.list_devices()
+    i = 0
+    for dev in devs:
+      print('{0} (id: {1}, in: {2}, out: {3})'.format(dev[1], i, dev[2] == 1, dev[3] == 1))
+      i += 1
+  elif not config.device is None or not (config.indevice is None or config.outdevice is None):
+    main(config)
   else:
-    print 'No output device found.  Exiting.'
+    print_help()
