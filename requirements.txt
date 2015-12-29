@@ -1,2 +1,1 @@
-PySDL2==0.9.3
-rtpmidi==0.7.1
+pyPortMidi==0.0.7
