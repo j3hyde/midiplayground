@@ -30,7 +30,7 @@ Installation/Environment
 ------------------------
 I found it less than trivial to get my environment up and going, unfortunately.  It seems that although pyportmidi appears to be the most used it doesn't install on Windows with a simple `pip install pyportmidi`.
 
-To ease this process I include instructions for building pyportmidi below.  However, [here]() is a pre-built Python wheel you can use instead.  You can download that and install using `pip install pyPortMidi-0.0.7-cp27-none-win32.whl` and it should *Just Work*.
+To ease this process I include instructions for building pyportmidi below.  However, [here](https://bitbucket.org/j3hyde/midiplayground/downloads/pyPortMidi-0.0.7-cp27-none-win32.whl) is a pre-built Python wheel you can use instead.  You can download that and install using `pip install pyPortMidi-0.0.7-cp27-none-win32.whl` and it should *Just Work*.
 
 Building PyPortMidi
 -------------------
