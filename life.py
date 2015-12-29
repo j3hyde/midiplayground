@@ -1,4 +1,4 @@
-import pypm, time, random, copy, argparse, sys
+import pypm, time, random, copy, argparse, sys, traceback
 
 # Concept of views
 # There is one root view which may delegate to sub-views.
@@ -7,8 +7,12 @@ import pypm, time, random, copy, argparse, sys
 
 class LifeView(object):
   '''Views basically listen to model changes and issue MIDI events to represent them.  Input is also taken from MIDI, interpreted a bit, and emitted as events by the View.'''
-  def __init__(self):
+  def __init__(self, width=8, height=8, left=0, top=0):
     self.listeners = []
+    self.width = width
+    self.height = height
+    self.left = left
+    self.top = top
 
   def setitem(self, o, i, v):
     '''Listen for LifeModel changes.'''
@@ -142,6 +146,8 @@ class MidiDriver(UIDriver):
     
     >>> MidiDriver.map_ui_to_midi(5, 5)
     85
+    >>> MidiDriver.map_ui_to_midi(8, 0)
+    8
     '''
     return row * 16 + col
 
@@ -164,13 +170,23 @@ class MidiDriver(UIDriver):
 
 
 class MidiLifeView(LifeView):
-  def __init__(self, ui_driver):
+  def __init__(self, *args, **kwargs):
     '''Takes a MIDI device to be used for displaying life.'''
-    super(MidiLifeView, self).__init__()
+    if kwargs.has_key('ui_driver'):
+      ui_driver = kwargs.pop('ui_driver', None)
+    elif len(args) > 0:
+      ui_driver = args[0]
+      args = args[1:]
     self.ui_driver = ui_driver
 
+    super(MidiLifeView, self).__init__(*args, **kwargs)
+
   def setitem(self, o, i, v):
-    self.ui_driver.set(i[0], i[1], v)
+    if type(i) is str and i == 'paused':
+      self.ui_driver.set(8, 0, 127 if bool(v) else 1)
+    elif type(i) is tuple:
+      self.ui_driver.set(i[0], i[1], v)
+
     self.ui_driver.commit()
 
   def handle_input(self):
@@ -203,6 +219,8 @@ class LifeModel(object):
       self.model = [[0 for c in range(width)] for r in range(height)]
     else:
       self.model = [[data[r][c] for c in range(width)] for r in range(height)]
+
+    self._paused = False
 
   def __getitem__(self, i):
     '''Enables two-dimensional access to the model.  The first index is the column, the second is the row.
@@ -243,6 +261,9 @@ class LifeModel(object):
     IndexError: Index out of range.
 
     '''
+    if type(i) is str and i == 'paused':
+      return self._paused
+
     if not type(i) is tuple:
       raise TypeError("Expected a 2-tuple but got a {0} instead.".format(type(i)))
 
@@ -306,6 +327,13 @@ class LifeModel(object):
         ...
     IndexError: Index out of range.
     '''
+    if type(i) is str:
+      if i == 'paused':
+        self._paused = bool(value)
+      else:
+        print 'got unexpected key: {0}'.format(i)
+      return
+
     if not type(i) is tuple:
       raise TypeError("Expected a 2-tuple but got a {0} instead.".format(type(i)))
 
@@ -556,7 +584,6 @@ class Life(object):
     self.view.add_listener(self.input_handler)
     self.model.add_listener(self.view.setitem)
     self.model.perturb(30)
-    self.paused = False
 
   def run(self, speed=1):
     '''Runs a Life simulation and displays it in a view.'''
@@ -566,7 +593,7 @@ class Life(object):
     next_tick = time.time()
     while True:
       now = time.time()
-      if now >= next_tick and not self.paused:
+      if now >= next_tick and not self.model['paused']:
         next_tick = now + speed
         self.model.tick()
         print(self.model)
@@ -584,7 +611,7 @@ class Life(object):
       v = self.model[uievent.col, uievent.row]
       self.model[uievent.col, uievent.row] = 1 if v == 0 else 0
     elif uievent.col == 8 and uievent.row == 0:
-      self.paused = not self.paused
+      self.model['paused'] = not self.model['paused']
 
 
 def find_device(dev_name):
@@ -657,7 +684,7 @@ def main(config):
       life.run(1)
       print 'Done.'
     except Exception as e:
-      print e
+      traceback.print_exc()
     finally:
       uidriver.clear()
       uidriver.close()
